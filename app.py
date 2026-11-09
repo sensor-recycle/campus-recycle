@@ -6,10 +6,13 @@ import streamlit as st
 from data import KST, init_data, load_records, register_user, save_record
 
 
-st.set_page_config(page_title="센서3팀_캠퍼스 스마트 분리수거함", layout="centered")
+st.set_page_config(
+    page_title="센서 3팀 - 캠퍼스 스마트 분리수거함",
+    layout="centered",
+)
 init_data()
 
-SUBJECT = ["한국어문학부", "역사문화학과", "프랑스언어·문화학과", "중어중문학부", "독일언어·문화학과", "일본학과", "문헌정보학과", "문화관광외식학부", "문화관광학전공", "르꼬르동블루외식경영전공", "교육학부", "화학과", "생명시스템학부", "수학과", "통계학과", "체육교육과", "무용과", "화공생명공학부", "인공지능공학부", "지능형전자시스템학부", "신소재물리학부", "소프트웨어학부", "컴퓨터과학전공", "데이터사이언스전공", "기계시스템학부", "첨단공학부", "가족자원경영학과", "아동복지학부", "의류학과", "식품영양학과", "정치외교학과", "행정학과", "홍보광고학과", "소비자경제학과", "사회심리학과", "법학부", "경제학부", "경영학부", "피아노과", "관현악과", "성악과", "작곡과", "약학부", "시각·영상디자인과", "산업디자인과", "환경디자인과", "공예과", "회화과", "자유전공학부", "융합국제학부", "한류국제학부", "숙명-CQU 경영국제학부", "글로벌서비스학부", "글로벌협력전공", "앙트러프러너십전공", "영어영문학부", "영어영문학전공", "테슬(TESL)전공", "미디어학부", "미디어학전공"]
+SUBJECT = ["가족자원경영학과", "경영학부", "경제학부", "공예과", "관현악과", "교육학부", "글로벌서비스학부", "글로벌협력전공", "기계시스템학부", "데이터사이언스전공", "독일언어·문화학과", "르꼬르동블루외식경영전공", "무용과", "문헌정보학과", "문화관광외식학부", "문화관광학전공", "미디어학부", "미디어학전공", "법학부", "사회심리학과", "산업디자인과", "생명시스템학부", "성악과", "소비자경제학과", "소프트웨어학부", "수학과", "숙명-CQU 경영국제학부", "시각·영상디자인과", "식품영양학과", "신소재물리학부", "아동복지학부", "앙트러프러너십전공", "약학부", "역사문화학과", "영어영문학부", "영어영문학전공", "융합국제학부", "의류학과", "인공지능공학부", "일본학과", "자유전공학부", "작곡과", "정치외교학과", "중어중문학부", "지능형전자시스템학부", "첨단공학부", "체육교육과", "컴퓨터과학전공", "테슬(TESL)전공", "통계학과", "프랑스언어·문화학과", "피아노과", "한국어문학부", "한류국제학부", "행정학과", "홍보광고학과", "화공생명공학부", "화학과", "환경디자인과", "회화과"]
 MATERIAL = ["플라스틱", "캔", "종이"]
 MENU = ["분리수거 등록", "내 실적", "배출 내역·학과 현황"]
 
@@ -21,19 +24,91 @@ st.markdown("""
 html, body, .stApp, .stApp * :not([class*="material"]):not([data-testid="stIconMaterial"]) {
     font-family: "Pretendard", sans-serif;
 }
-.block-container { max-width: 720px; padding-top: 2.5rem; padding-bottom: 3rem; }
-h1, h2, h3 { color: #003087; font-weight: 700; letter-spacing: -0.02em; }
-[data-testid="stForm"] { border: 1px solid #E3E6EE; border-radius: 12px; }
-[data-testid="stMetric"] { background: #F5F6FA; border-radius: 12px; padding: 16px 18px; }
-[data-testid="stMetricValue"] { color: #003087; font-weight: 700; }
-.stButton > button, .stFormSubmitButton > button { border-radius: 10px; }
+
+.block-container {
+    max-width: 480px;
+    padding: 2rem 1.25rem 3rem;
+}
+
+h1, h2, h3 {
+    color: #166534;
+    font-weight: 700;
+    letter-spacing: -0.02em;
+}
+
+[data-testid="stCaptionContainer"],
+[data-testid="stCaptionContainer"] p {
+    color: #5F6B63;
+}
+
+[data-testid="stForm"] {
+    border: 1px solid #DDE5DF;
+    border-radius: 12px;
+}
+
+[data-testid="stMetric"] {
+    background: #F5F5F5;
+    border-radius: 12px;
+    padding: 16px 18px;
+}
+
+[data-testid="stMetricLabel"] p {
+    color: #111111;
+    font-size: 1rem;
+    font-weight: 500;
+}
+
+[data-testid="stMetricValue"] {
+    padding-top: 8px;
+    color: #166534;
+    font-weight: 700;
+}
+
+:is(.st-key-empty_results, .st-key-empty_history, .st-key-empty_ranking)
+[data-testid="stAlertContainer"] {
+    background-color: #EDF2E8;
+}
+
+:is(.st-key-empty_results, .st-key-empty_history, .st-key-empty_ranking)
+[data-testid="stAlert"] p {
+    color: #166534;
+}
+
+.stButton > button, .stFormSubmitButton > button {
+    border-radius: 10px;
+}
+
+.st-key-page_header { padding-bottom: 1.5rem; }
+.st-key-page_header h1 { padding-bottom: 0.75rem; }
+[data-testid="stTabPanel"] { padding-top: 1rem; }
+
+.st-key-userbar [data-testid="stHorizontalBlock"] { justify-content: space-between; align-items: center; }
+.st-key-userbar [data-testid="stColumn"] { flex: 0 0 auto !important; width: auto !important; }
+.st-key-userbar .stButton > button {
+    min-height: 0; width: auto; padding: 0.3rem 0.75rem;
+    font-size: 0.8rem; font-weight: 500; border-radius: 999px; white-space: nowrap;
+}
+
+/* 모바일(아이폰 16, 393px): 열을 세로로 쌓지 않고 가로 유지 */
+[data-testid="stHorizontalBlock"] { flex-wrap: nowrap !important; gap: 0.5rem; }
+[data-testid="stColumn"] { min-width: 0 !important; }
+[data-testid="stMetric"] { padding: 14px 12px; }
+[data-testid="stMetricLabel"] p { font-size: 0.9rem; }
+[data-testid="stMetricValue"] { font-size: 1.35rem; }
+
+.stButton > button, .stFormSubmitButton > button { min-height: 48px; }
+.st-key-userbar .stButton > button { min-height: 0; }
+
+@media (max-width: 480px) {
+    .block-container { padding-inline: 1rem; }
+}
 </style>
 """, unsafe_allow_html=True)
 
 
-# 헤더
-st.title("캠퍼스 스마트 분리수거")
-st.caption("나의 분리배출을 기록하고 포인트를 모으세요.")
+with st.container(key="page_header"):
+    st.title("캠퍼스 스마트 분리수거")
+    st.caption("나의 분리배출을 기록하고 포인트를 모으세요.")
 
 
 # 로그인 화면
@@ -45,7 +120,9 @@ if "user" not in st.session_state:
             "학번", placeholder="학번을 입력해주세요", max_chars=20
         )
         department = st.selectbox("학과", SUBJECT)
-        start = st.form_submit_button("로그인하기", type="primary", use_container_width=True)
+        start = st.form_submit_button(
+            "로그인하기", type="primary", use_container_width=True
+        )
 
     if start:
         student_id = student_id.strip()
@@ -54,49 +131,57 @@ if "user" not in st.session_state:
         elif not register_user(student_id, department):
             st.error("해당하는 학생을 찾을 수 없습니다.")
         else:
-            st.session_state.user = {"student_id": student_id, "department": department}
-            st.session_state.page = MENU[0]
+            st.session_state.user = {
+                "student_id": student_id,
+                "department": department,
+            }
             st.rerun()
 
     st.stop()
 
 
-# 마이페이지
+# 사용자 정보 및 메뉴
 user = st.session_state.user
 
-info_col, switch_col = st.columns([4, 1], vertical_alignment="center")
-info_col.write(f"**{user['department']}** · {user['student_id']}")
-if switch_col.button("사용자 변경", use_container_width=True):
-    del st.session_state["user"]
-    st.session_state.pop("notice", None)
-    st.rerun()
-
-page = st.radio("메뉴", MENU, horizontal=True, label_visibility="collapsed", key="page")
-st.divider()
+with st.container(key="userbar"):
+    info_col, switch_col = st.columns([4, 1], vertical_alignment="center")
+    info_col.write(f"**{user['department']}** · {user['student_id']}")
+    if switch_col.button("사용자 변경"):
+        del st.session_state["user"]
+        st.session_state.pop("notice", None)
+        st.rerun()
 
 if "notice" in st.session_state:
     st.success(st.session_state.pop("notice"))
 
+register_tab, results_tab, history_tab = st.tabs(MENU)
 
-# 분리수거품 등록 화면
-if page == "등록":
+
+# 분리수거 등록
+with register_tab:
     st.subheader("분리배출 등록")
-    # st.caption("(센서 연결 전, 수거 완료를 직접 입력하는 시연 화면이라는 뉘앙스의 멘트)")
-
     material = st.selectbox("재질", MATERIAL)
 
     with st.form(f"register_{material}", clear_on_submit=True):
         if material == "종이":
             weight_g = st.number_input(
-                "건조 종이 무게 (g)", min_value=0.0, max_value=5000.0, value=10.0, step=1.0
+                "건조 종이 무게 (g)",
+                min_value=0.0,
+                max_value=5000.0,
+                value=10.0,
+                step=1.0,
             )
             quantity = 0
         else:
-            quantity = st.number_input("수거 개수", min_value=1, max_value=100, value=1, step=1)
+            quantity = st.number_input(
+                "수거 개수", min_value=1, max_value=100, value=1, step=1
+            )
             weight_g = 0.0
 
         confirmed = st.checkbox("정상적으로 수거가 완료되었습니다.")
-        submitted = st.form_submit_button("수거 등록", type="primary", use_container_width=True)
+        submitted = st.form_submit_button(
+            "수거 등록", type="primary", use_container_width=True
+        )
 
     st.caption("적립 기준(임시): 플라스틱·캔 1개당 10P / 종이 누적 10g당 1P")
 
@@ -114,28 +199,29 @@ if page == "등록":
             st.rerun()
 
 
-# 내 실적 표시 화면
-elif page == "내 실적":
+# 내 실적
+with results_tab:
     mine = load_records(user["student_id"])
 
     st.subheader("내 실적")
     st.caption("전체 기간 누적 · 시연 데이터")
-
     st.metric("누적 환경 포인트", f"{int(mine['points'].sum()):,} P")
 
     col1, col2, col3 = st.columns(3)
     for col, name in zip((col1, col2), ("플라스틱", "캔")):
         count = mine.loc[mine["material"] == name, "quantity"].sum()
         col.metric(name, f"{int(count):,}개")
+
     paper = mine.loc[mine["material"] == "종이", "weight_g"].sum()
     col3.metric("종이", f"{paper:,.1f}g")
 
     if mine.empty:
-        st.info("아직 등록된 실적이 없습니다.")
+        with st.container(key="empty_results"):
+            st.info("아직 등록된 실적이 없습니다.")
 
 
-# 배출 내역 · 학과 현황
-else:
+# 배출 내역 및 학과 현황
+with history_tab:
     mine = load_records(user["student_id"])
 
     st.subheader("배출 내역")
@@ -148,18 +234,21 @@ else:
         filtered = mine[pd.to_datetime(mine["created_at"], utc=True) >= cutoff]
 
     if filtered.empty:
-        st.info("선택한 기간에 배출 내역이 존재하지 않습니다.")
+        with st.container(key="empty_history"):
+            st.info("선택한 기간에 배출 내역이 존재하지 않습니다.")
     else:
         history = pd.DataFrame({
             "배출 일시": filtered["created_at"].map(
-                lambda v: datetime.fromisoformat(v).strftime("%Y-%m-%d %H:%M")
+                lambda value: datetime.fromisoformat(value).strftime("%Y-%m-%d %H:%M")
             ),
             "재질": filtered["material"],
             "수거량": [
-                f"{w:,.1f} g" if m == "종이" else f"{int(q)} 개"
-                for m, w, q in zip(filtered["material"], filtered["weight_g"], filtered["quantity"])
+                f"{weight:,.1f} g" if material == "종이" else f"{int(quantity)} 개"
+                for material, weight, quantity in zip(
+                    filtered["material"], filtered["weight_g"], filtered["quantity"]
+                )
             ],
-            "포인트": filtered["points"].map(lambda v: f"+{int(v):,} P"),
+            "포인트": filtered["points"].map(lambda value: f"+{int(value):,} P"),
         })
         st.dataframe(history, hide_index=True, use_container_width=True)
 
@@ -169,7 +258,8 @@ else:
 
     records = load_records()
     if records.empty:
-        st.info("아직 등록된 학과별 실적이 없습니다.")
+        with st.container(key="empty_ranking"):
+            st.info("아직 등록된 학과별 실적이 없습니다.")
     else:
         ranking = (
             records.groupby("department", as_index=False)
@@ -177,8 +267,12 @@ else:
             .sort_values(["points", "department"], ascending=[False, True])
         )
         ranking["rank"] = ranking["points"].rank(method="min", ascending=False).astype(int)
-        ranking = ranking[["rank", "department", "points", "participants"]].rename(columns={
-            "rank": "순위", "department": "학과",
-            "points": "누적 포인트", "participants": "참여 인원",
-        })
+        ranking = ranking[["rank", "department", "points", "participants"]].rename(
+            columns={
+                "rank": "순위",
+                "department": "학과",
+                "points": "누적 포인트",
+                "participants": "참여 인원",
+            }
+        )
         st.dataframe(ranking, hide_index=True, use_container_width=True)
