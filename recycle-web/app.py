@@ -89,7 +89,6 @@ h1, h2, h3 {
     font-size: 0.8rem; font-weight: 500; border-radius: 999px; white-space: nowrap;
 }
 
-/* 모바일(아이폰 16, 393px): 열을 세로로 쌓지 않고 가로 유지 */
 [data-testid="stHorizontalBlock"] { flex-wrap: nowrap !important; gap: 0.5rem; }
 [data-testid="stColumn"] { min-width: 0 !important; }
 [data-testid="stMetric"] { padding: 14px 12px; }
@@ -117,7 +116,7 @@ if "user" not in st.session_state:
 
     with st.form("login_form"):
         student_id = st.text_input(
-            "학번", placeholder="학번을 입력해주세요", max_chars=20
+            "학번", placeholder="학번을 입력해주세요", max_chars=7
         )
         department = st.selectbox("학과", SUBJECT)
         start = st.form_submit_button(
