@@ -3,7 +3,7 @@ from datetime import datetime, timedelta
 import pandas as pd
 import streamlit as st
 
-from data import KST, init_data, load_records, register_user, save_record
+from data import KST, RULES, init_data, load_records, register_user
 
 
 st.set_page_config(
@@ -14,7 +14,7 @@ init_data()
 
 SUBJECT = ["가족자원경영학과", "경영학부", "경제학부", "공예과", "관현악과", "교육학부", "글로벌서비스학부", "글로벌협력전공", "기계시스템학부", "데이터사이언스전공", "독일언어·문화학과", "르꼬르동블루외식경영전공", "무용과", "문헌정보학과", "문화관광외식학부", "문화관광학전공", "미디어학부", "미디어학전공", "법학부", "사회심리학과", "산업디자인과", "생명시스템학부", "성악과", "소비자경제학과", "소프트웨어학부", "수학과", "숙명-CQU 경영국제학부", "시각·영상디자인과", "식품영양학과", "신소재물리학부", "아동복지학부", "앙트러프러너십전공", "약학부", "역사문화학과", "영어영문학부", "영어영문학전공", "융합국제학부", "의류학과", "인공지능공학부", "일본학과", "자유전공학부", "작곡과", "정치외교학과", "중어중문학부", "지능형전자시스템학부", "첨단공학부", "체육교육과", "컴퓨터과학전공", "테슬(TESL)전공", "통계학과", "프랑스언어·문화학과", "피아노과", "한국어문학부", "한류국제학부", "행정학과", "홍보광고학과", "화공생명공학부", "화학과", "환경디자인과", "회화과"]
 MATERIAL = ["플라스틱", "캔", "종이"]
-MENU = ["분리수거 등록", "내 실적", "배출 내역·학과 현황"]
+MENU = ["내 실적", "배출 내역·학과 현황"]
 
 
 st.markdown("""
@@ -107,12 +107,12 @@ h1, h2, h3 {
 
 with st.container(key="page_header"):
     st.title("캠퍼스 스마트 분리수거")
-    st.caption("나의 분리배출을 기록하고 포인트를 모으세요.")
+    st.caption("개인 배출 내역과 학과별 실적을 조회하세요.")
 
 
 # 로그인 화면
 if "user" not in st.session_state:
-    st.subheader("로그인")
+    st.subheader("사용자 정보")
 
     with st.form("login_form"):
         student_id = st.text_input(
@@ -120,7 +120,7 @@ if "user" not in st.session_state:
         )
         department = st.selectbox("학과", SUBJECT)
         start = st.form_submit_button(
-            "로그인하기", type="primary", use_container_width=True
+            "실적 조회하기", type="primary", use_container_width=True
         )
 
     if start:
@@ -128,7 +128,7 @@ if "user" not in st.session_state:
         if not (student_id.isascii() and student_id.isdigit()):
             st.error("숫자만 입력해주세요.")
         elif not register_user(student_id, department):
-            st.error("해당하는 학생을 찾을 수 없습니다.")
+            st.error("학번과 학과를 올바르게 입력했는지 확인해주세요.")
         else:
             st.session_state.user = {
                 "student_id": student_id,
@@ -147,72 +147,30 @@ with st.container(key="userbar"):
     info_col.write(f"**{user['department']}** · {user['student_id']}")
     if switch_col.button("사용자 변경"):
         del st.session_state["user"]
-        st.session_state.pop("notice", None)
         st.rerun()
 
-if "notice" in st.session_state:
-    st.success(st.session_state.pop("notice"))
-
-register_tab, results_tab, history_tab = st.tabs(MENU)
-
-
-# 분리수거 등록
-with register_tab:
-    st.subheader("분리배출 등록")
-    material = st.selectbox("재질", MATERIAL)
-
-    with st.form(f"register_{material}", clear_on_submit=True):
-        if material == "종이":
-            weight_g = st.number_input(
-                "건조 종이 무게 (g)",
-                min_value=0.0,
-                max_value=5000.0,
-                value=10.0,
-                step=1.0,
-            )
-            quantity = 0
-        else:
-            quantity = st.number_input(
-                "수거 개수", min_value=1, max_value=100, value=1, step=1
-            )
-            weight_g = 0.0
-
-        confirmed = st.checkbox("정상적으로 수거가 완료되었습니다.")
-        submitted = st.form_submit_button(
-            "수거 등록", type="primary", use_container_width=True
-        )
-
-    st.caption("적립 기준(임시): 플라스틱·캔 1개당 10P / 종이 누적 10g당 1P")
-
-    if submitted:
-        if not confirmed:
-            st.warning("재활용품이 정상적으로 수거되었는지 확인해 주세요.")
-        else:
-            points = save_record(
-                student_id=user["student_id"],
-                material=material,
-                quantity=quantity,
-                weight_g=weight_g,
-            )
-            st.session_state.notice = f"등록이 완료되었습니다. +{points:,}P"
-            st.rerun()
-
+st.caption("센서 연결 전에는 새 배출 기록이 표시되지 않아요.") # 수정할지 말지 고민..
+results_tab, history_tab = st.tabs(MENU)
 
 # 내 실적
 with results_tab:
     mine = load_records(user["student_id"])
 
     st.subheader("내 실적")
-    st.caption("전체 기간 누적 · 시연 데이터")
+    today = datetime.now(KST).date().isoformat()
+    st.caption("오늘 적립 횟수 · 한국시간 자정 초기화")
+    for name, (limit, reward) in RULES.items():
+        used = len(mine[(mine["material"] == name) & (mine["points"] > 0)
+                        & (mine["created_at"].astype(str).str.startswith(today))])
+        st.write(f"{name}  {used}/{limit}회 · 1회 {reward}P")
+    st.caption("일일 한도 내의 배출만 수거량과 내역에 기록돼요.")
+    st.caption("전체 기간 누적")
     st.metric("누적 환경 포인트", f"{int(mine['points'].sum()):,} P")
 
     col1, col2, col3 = st.columns(3)
-    for col, name in zip((col1, col2), ("플라스틱", "캔")):
+    for col, name in zip((col1, col2, col3), MATERIAL):
         count = mine.loc[mine["material"] == name, "quantity"].sum()
-        col.metric(name, f"{int(count):,}개")
-
-    paper = mine.loc[mine["material"] == "종이", "weight_g"].sum()
-    col3.metric("종이", f"{paper:,.1f}g")
+        col.metric(name, f"{int(count):,}" + ("건" if name == "종이" else "개"))
 
     if mine.empty:
         with st.container(key="empty_results"):
@@ -242,10 +200,8 @@ with history_tab:
             ),
             "재질": filtered["material"],
             "수거량": [
-                f"{weight:,.1f} g" if material == "종이" else f"{int(quantity)} 개"
-                for material, weight, quantity in zip(
-                    filtered["material"], filtered["weight_g"], filtered["quantity"]
-                )
+                f"{int(quantity)}" + ("건" if material == "종이" else "개")
+                for material, quantity in zip(filtered["material"], filtered["quantity"])
             ],
             "포인트": filtered["points"].map(lambda value: f"+{int(value):,} P"),
         })

@@ -1,96 +1,116 @@
-import uuid
+import json
+import os
+from contextlib import contextmanager
 from datetime import datetime, timedelta, timezone
+from pathlib import Path
+from tempfile import NamedTemporaryFile
+from uuid import uuid4
 
 import pandas as pd
-import streamlit as st
-
 
 KST = timezone(timedelta(hours=9))
+# 재질별 (하루 적립 횟수, 배출 1회당 포인트)
+RULES = {"플라스틱": (5, 10), "캔": (5, 10), "종이": (3, 5)}
+STORE = Path(__file__).with_name("recycling_records.json")
+COLUMNS = ["event_id", "student_id", "department", "material", "quantity", "points", "created_at"]
 
-COLUMNS = [
-    "event_id", "student_id", "department", "material",
-    "quantity", "weight_g", "points", "created_at",
-]
+
+@contextmanager
+def write_lock():
+    # 한 기기의 여러 웹 세션이 동시에 마지막 적립 기회를 쓰지 못하도록 막음
+    with STORE.with_suffix(".lock").open("a+b") as lock:
+        if os.name == "nt":
+            import msvcrt
+            if lock.tell() == 0:
+                lock.write(b"0")
+                lock.flush()
+            lock.seek(0)
+            msvcrt.locking(lock.fileno(), msvcrt.LK_LOCK, 1)
+        else:
+            import fcntl
+            fcntl.flock(lock.fileno(), fcntl.LOCK_EX)
+        yield
+
+
+def read_store():
+    try:
+        return json.loads(STORE.read_text(encoding="utf-8"))
+    except FileNotFoundError:
+        return {"users": {}, "records": []}
+
+
+def write_store(store):
+    with NamedTemporaryFile(mode="w", encoding="utf-8", dir=STORE.parent, delete=False) as tmp:
+        path = Path(tmp.name)
+        try:
+            json.dump(store, tmp, ensure_ascii=False)
+            tmp.flush()
+            os.fsync(tmp.fileno())
+        except BaseException:
+            tmp.close()
+            path.unlink(missing_ok=True)
+            raise
+    try:
+        os.replace(path, STORE)
+    finally:
+        path.unlink(missing_ok=True)
 
 
 def init_data():
-    if "demo_users" not in st.session_state:
-        st.session_state.demo_users = {}
-
-    if "demo_records" not in st.session_state:
-        st.session_state.demo_records = []
+    with write_lock():
+        if not STORE.exists():
+            write_store({"users": {}, "records": []})
 
 
 def register_user(student_id, department):
-    init_data()
-    users = st.session_state.demo_users
+    with write_lock():
+        store = read_store()
+        if student_id in store["users"]:
+            return store["users"][student_id] == department
+        store["users"][student_id] = department
+        write_store(store)
+        return True
 
-    if student_id in users and users[student_id] != department:
-        return False
-
-    users[student_id] = department
-    return True
-
-
-def save_record(student_id, material, quantity=0, weight_g=0.0):
-    init_data()
-
-    if student_id not in st.session_state.demo_users:
-        raise ValueError("등록되지 않은 사용자입니다.")
-
-    if material not in ["플라스틱", "캔", "종이"]:
+# 배출 현황 저장 및 포인트 반환
+def save_record(student_id, material, quantity=1):
+    if material not in RULES:
         raise ValueError("지원하지 않는 재질입니다.")
+    if isinstance(quantity, bool) or int(quantity) != quantity or quantity < 1:
+        raise ValueError("수량은 1 이상의 정수여야 합니다.")
 
-    if material == "종이":
-        if weight_g <= 0:
-            raise ValueError("종이 무게는 0보다 커야 합니다.")
+    with write_lock():
+        store = read_store()
+        if student_id not in store["users"]:
+            raise ValueError("등록되지 않은 사용자입니다.")
 
-        quantity = 0
+        now = datetime.now(KST)
+        today = now.date().isoformat()
+        limit, reward = RULES[material]
 
-        # 누적 10g당 1P
-        previous_weight = sum(
-            record["weight_g"]
-            for record in st.session_state.demo_records
-            if record["student_id"] == student_id
-            and record["material"] == "종이"
+        rewarded = sum(
+            row["student_id"] == student_id and row["material"] == material
+            and row["created_at"][:10] == today and row["points"] > 0
+            for row in store["records"]
         )
-        points = (
-            int((previous_weight + weight_g) // 10)
-            - int(previous_weight // 10)
-        )
-    else:
-        if quantity < 1 or int(quantity) != quantity:
-            raise ValueError("개수는 1 이상의 정수여야 합니다.")
+        if rewarded >= limit:
+            return 0
 
-        quantity = int(quantity)
-        weight_g = 0.0
-        points = quantity * 10
-
-    st.session_state.demo_records.append({
-        "event_id": str(uuid.uuid4()),
-        "student_id": student_id,
-        "department": st.session_state.demo_users[student_id],
-        "material": material,
-        "quantity": quantity,
-        "weight_g": float(weight_g),
-        "points": points,
-        "created_at": datetime.now(KST).isoformat(timespec="seconds"),
-    })
-
-    return points
+        points = reward
+        store["records"].append({
+            "event_id": str(uuid4()), "student_id": student_id,
+            "department": store["users"][student_id], "material": material,
+            "quantity": int(quantity), "points": points,
+            "created_at": now.isoformat(timespec="seconds"),
+        })
+        write_store(store)
+        return points
 
 
 def load_records(student_id=None):
-    init_data()
-    df = pd.DataFrame(st.session_state.demo_records, columns=COLUMNS)
-
-    for column in ["quantity", "weight_g", "points"]:
-        df[column] = pd.to_numeric(df[column])
-
+    records = [row for row in read_store()["records"] if row["points"] > 0]
     if student_id is not None:
-        df = df[df["student_id"] == student_id]
+        records = [row for row in records if row["student_id"] == student_id]
 
-    return (
-        df.sort_values("created_at", ascending=False)
-        .reset_index(drop=True)
+    return pd.DataFrame(records[::-1], columns=COLUMNS).sort_values(
+        "created_at", ascending=False, kind="stable", ignore_index=True
     )
