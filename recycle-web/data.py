@@ -1,5 +1,6 @@
 import json
 import os
+import re
 from contextlib import contextmanager
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
@@ -161,14 +162,15 @@ def load_records(student_id=None):
 def _supabase_config():
     url, key = os.environ.get("SUPABASE_URL"), os.environ.get("SUPABASE_KEY")
     if not (url and key):  # 로컬 실행 · 라즈베리 파이: 이 폴더의 .streamlit/secrets.toml
+        # tomllib은 파이썬 3.11부터 있어서(라즈베리 파이는 3.9일 수 있음) KEY = "값" 줄을 직접 읽는다.
         try:
-            import tomllib
-            secrets = tomllib.loads(
-                (Path(__file__).parent / ".streamlit" / "secrets.toml").read_text(encoding="utf-8")
-            )
-            url, key = secrets.get("SUPABASE_URL"), secrets.get("SUPABASE_KEY")
-        except (ImportError, OSError, ValueError):
-            pass
+            text = (Path(__file__).parent / ".streamlit" / "secrets.toml").read_text(encoding="utf-8-sig")
+        except OSError:
+            text = ""
+        found = dict(re.findall(
+            r"""^[ \t]*(SUPABASE_URL|SUPABASE_KEY)[ \t]*=[ \t]*["'“”]([^"'“”\r\n]*)["'“”]""",
+            text, re.M))
+        url, key = found.get("SUPABASE_URL"), found.get("SUPABASE_KEY")
     if not (url and key):  # Streamlit Cloud: 앱 설정의 Secrets
         try:
             import streamlit as st
