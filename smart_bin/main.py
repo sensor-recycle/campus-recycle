@@ -3,8 +3,8 @@
 """스마트 분리수거기 통합 제어기 (라즈베리파이 + Picamera2).
 
 파이썬 3.10+ / GPIO Zero / Picamera2 / NumPy / Pillow / LiteRT or TFLite Runtime
-순서: 서보 원위치 강제 신호 -> IR/투입 초음파 OR 안정 감지 -> 금속 우선 검사
-    -> (비금속만) 카메라 5프레임·수분 검증 -> 분류판 위치 선정 -> 측정판 배출
+순서: 서보 원위치 -> IR/투입 초음파 OR 안정 감지 -> 수분 감시 시작 -> 금속 검사
+    -> (비금속만) 카메라 5프레임 -> 분류판 위치 선정 -> 수분 최종 확인 -> 측정판 배출
     -> 서보 복귀 -> 리워드 적립 -> 1회 분류 자동 종료 시 초음파 3개 통 각각 1회 검사
 
 보안/기계 안전: 서보에는 위치 피드백이 없고 초음파는 실제 충만도를 직접 보증하지 않는다.
@@ -29,7 +29,7 @@ from http import HTTPStatus
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 from statistics import median
-from typing import Any
+from typing import Any, Callable
 
 BASE = Path(__file__).resolve().parent
 LOG = logging.getLogger("sorter")
@@ -103,19 +103,20 @@ IR_POLL_SECONDS = 0.04
 METAL_GPIO = 26
 METAL_ACTIVE_LOW = True
 METAL_VOTES = 7
-# 요청사항: 금속 신호가 한 번이라도 검출되면 캔으로 확정 (AI 검사 생략).
+# 마른 물체에서 금속 신호가 한 번이라도 검출되면 캔으로 판정 (AI 검사 생략).
 # 순간적인 잡음에도 캔으로 분류될 수 있으므로 실측 보정 시 2~3으로 높일 수 있음.
 METAL_MIN_HITS = 1
 METAL_SAMPLE_SECONDS = 0.02
 
-# 이전 코드의 MCP3208 배선 설정은 보존. 미연결 장비는 False로 유지.
-MOISTURE_ENABLED = False
+# 수분 검사는 모든 재질에 필수. 투입 확정부터 측정판 배출 직전까지 MCP3208을 읽는다.
 MOISTURE_ADC = {"channel": 0, "max_voltage": 3.3,
                 "clock_pin": 11, "mosi_pin": 10,
                 "miso_pin": 25, "select_pin": 8}
-MOISTURE_SAMPLES = 5
-MOISTURE_WET_RAW = 2000  # 실측한 건조/젖음 값으로 보정 필수
+MOISTURE_POLL_SECONDS = 0.02
+MOISTURE_WET_RAW = 10  # 저감도 설정: ADC 0~4095 중 100 이하만 젖음 후보
+MOISTURE_CONFIRM_SECONDS = 3.0  # 기준을 벗어나면 연속 측정 시간을 처음부터 계산
 MOISTURE_WET_WHEN_HIGH = False
+WET_REASON = "수분 감지로 반려합니다. 측정판에서 물체를 꺼내 주세요."
 
 # 2026-11-25 사용자 실물 점등 검증 완료: 4핀 RGB(-), 공통 캐소드(GND).
 # RGB1(분류): 빨강 GPIO22 / 초록 GPIO23 / 파랑 GPIO7
@@ -229,9 +230,12 @@ def validate_settings() -> None:
         raise ValueError("RGB2는 blue 미연결이므로 red, green GPIO만 사용합니다")
     for group, pins in (("분류 상태 RGB", STATUS_RGB_PINS), ("적재량 RGB", FILL_RGB_PINS)):
         assignments += [(f"{group} {color}", pin) for color, pin in pins.items()]
-    if MOISTURE_ENABLED:
-        assignments += [(f"MCP3208 {name}", MOISTURE_ADC[name])
-                        for name in ("clock_pin", "mosi_pin", "miso_pin", "select_pin")]
+    if not 0 <= MOISTURE_WET_RAW <= 4095 or MOISTURE_POLL_SECONDS <= 0:
+        raise ValueError("수분 ADC 기준값(0~4095) 및 측정 간격을 확인하세요")
+    if not math.isfinite(MOISTURE_CONFIRM_SECONDS) or MOISTURE_CONFIRM_SECONDS <= 0:
+        raise ValueError("수분 확정 시간은 0보다 큰 유한한 값이어야 합니다")
+    assignments += [(f"MCP3208 {name}", MOISTURE_ADC[name])
+                    for name in ("clock_pin", "mosi_pin", "miso_pin", "select_pin")]
     seen: dict[int, str] = {}
     for label, pin in assignments:
         if not isinstance(pin, int) or not 0 <= pin <= 27:
@@ -282,7 +286,11 @@ def decide_camera(scores: dict[str, float]) -> tuple[str, str | None]:
 
 def decide_final(camera_kind: str | None, camera_reason: str | None,
                  metal_found: bool | None, wet: bool | None) -> tuple[str, str | None]:
-    """금속 신호 감지 시 카메라 인식 성공/실패 여부와 무관하게 캔 확정."""
+    """건조가 확인된 물체에만 금속/카메라 판정을 적용한다."""
+    if wet is True:
+        return "unknown", WET_REASON
+    if wet is None:
+        return "unknown", "수분 상태를 확인할 수 없어 반려합니다."
     if metal_found is True:
         return "can", None
     if camera_kind is None:
@@ -290,8 +298,6 @@ def decide_final(camera_kind: str | None, camera_reason: str | None,
     kind, reason = camera_kind, camera_reason
     if metal_found is False and kind == "can" and reason is None:
         reason = "카메라는 캔으로 판정했으나 금속이 감지되지 않음"
-    if wet is True and reason is None:
-        reason = "물체에서 수분 감지"
     return kind, reason
 
 
@@ -878,25 +884,83 @@ def majority_sensor(sensor: Any) -> bool | None:
     detected = hits >= METAL_MIN_HITS
     LOG.info("[금속 측정] %d회 중 %d회 감지 (확정 기준 %d회 이상) → %s",
              len(reads), hits, METAL_MIN_HITS,
-             "★ 금속 감지! AI 판정과 무관하게 캔 확정" if detected else "금속 감지 안 됨")
+             "금속 감지! 캔 후보" if detected else "금속 감지 안 됨")
     return detected
 
 
-def moisture_sensor(adc: Any) -> tuple[int | None, bool | None]:
+def moisture_sensor(adc: Any) -> tuple[int, bool]:
     if adc is None:
-        return None, None
-    samples = []
-    for _ in range(MOISTURE_SAMPLES):
-        voltage_ratio = float(adc.value)
-        if not 0 <= voltage_ratio <= 1 or not math.isfinite(voltage_ratio):
-            raise RuntimeError("수분센서 ADC에서 유효하지 않은 값 수신")
-        samples.append(int(round(voltage_ratio * 4095)))
-        time.sleep(0.02)
-    raw = int(median(samples))
-    wet = wet_from_raw(raw)
-    LOG.info("[수분 측정] ADC 중앙값=%d / 기준=%d / 판정=%s", raw,
-             MOISTURE_WET_RAW, "젖음(보류 대상)" if wet else "마름")
-    return raw, wet
+        raise SafetyHold("수분 센서가 연결되지 않아 반려합니다.")
+    try:
+        ratio = float(adc.value)
+    except Exception as exc:
+        raise SafetyHold(f"수분 센서 읽기 실패로 반려합니다: {exc}") from exc
+    if not 0 <= ratio <= 1:
+        raise SafetyHold("수분 센서 측정값 오류로 반려합니다.")
+    raw = round(ratio * 4095)
+    return raw, wet_from_raw(raw)
+
+
+class MoistureMonitor:
+    """한 물체에서 젖음 신호가 연속으로 유지될 때만 반려하고, 읽기 오류는 즉시 보류한다."""
+    def __init__(self, adc: Any):
+        self.adc = adc
+        self.stop_event = threading.Event()
+        self.wet: bool | None = None
+        self._wet_since: float | None = None
+        self.hold: SafetyHold | None = None
+        self.thread = threading.Thread(target=self._watch, name="moisture-monitor", daemon=True)
+
+    def _read_dry(self) -> int:
+        raw, candidate = moisture_sensor(self.adc)
+        if candidate:
+            now = time.monotonic()
+            if self._wet_since is None:
+                self._wet_since = now
+            if now - self._wet_since >= MOISTURE_CONFIRM_SECONDS:
+                self.wet = True
+                raise SafetyHold(f"{WET_REASON} (ADC {raw}, {MOISTURE_CONFIRM_SECONDS:g}초 연속)")
+        else:
+            self._wet_since = None
+        self.wet = False
+        return raw
+
+    def _watch(self):
+        try:
+            while not self.stop_event.wait(MOISTURE_POLL_SECONDS):
+                self._read_dry()
+        except SafetyHold as exc:
+            self.hold = exc
+
+    def __enter__(self):
+        raw = self._read_dry()
+        LOG.info("[수분 검사 시작] ADC=%d, 젖음 기준이 %g초 연속일 때 반려", raw, MOISTURE_CONFIRM_SECONDS)
+        self.thread.start()
+        return self
+
+    def check(self):
+        if self.hold is not None:
+            raise self.hold
+
+    def _stop(self):
+        self.stop_event.set()
+        self.thread.join()
+
+    def confirm_before_drop(self):
+        # 진행 중인 ADC 읽기까지 마친 뒤, 측정판에 배출 명령을 보내기 직전에 한 번 더 읽는다.
+        self._stop()
+        self.check()
+        raw = self._read_dry()
+        # 마지막에 처음 강한 신호가 들어와도 같은 시간 기준으로 확인한다.
+        while self._wet_since is not None:
+            time.sleep(MOISTURE_POLL_SECONDS)
+            raw = self._read_dry()
+        LOG.info("[배출 직전 수분 검사] ADC=%d, 수분 반려 기준 미충족", raw)
+
+    def __exit__(self, exc_type, exc, tb):
+        self._stop()
+        if exc is not self.hold and (exc is None or isinstance(exc, SafetyHold)):
+            self.check()
 
 
 def measure_once(trig: Any, echo: Any) -> float | None:
@@ -1164,7 +1228,7 @@ class Servos:
         LOG.info("[시작 원위치 완료] 두 서보 원위치 명령 전송 완료 → 이 다음에 AI·카메라 초기화")
         LOG.warning("[중요] 실제 원위치 도달은 감지할 수 없습니다. 움직이지 않으면 GPIO·전원·각도·기계 간섭을 확인하세요")
 
-    def drop(self, kind: str):
+    def drop(self, kind: str, confirm_dry: Callable[[], None]):
         diverter_target, tray_target, diverter_note, tray_direction = route_plan(kind)
         LOG.info("[배출 경로] %s → 분류판 %s(%d°) → 측정판 %s %d° → %s 수거함",
                  KOREAN[kind], diverter_note, diverter_target, tray_direction,
@@ -1174,6 +1238,7 @@ class Servos:
             LOG.info("[분류판 선택] %s: %s (%d°)", KOREAN[kind], diverter_note, diverter_target)
             self._move("diverter", diverter_target, "분류판 오른쪽" if kind == "can" else "분류판 원위치")
             time.sleep(DIVERTER_SETTLE_SECONDS)
+            confirm_dry()
             self._move("tray", tray_target, "측정판 배출")
             LOG.info("[배출 동작] %s 배출 방향으로 기울임 완료, %.1f초 낙하 대기 (실제 낙하 미확인)",
                      KOREAN[kind], DROP_SECONDS)
@@ -1211,31 +1276,34 @@ class Sorter:
         self.led.set(color)
 
     def process_one(self):
-        # 1. 물체 안정화. 카메라가 오류 상태라도 금속 감지를 먼저 확인한다.
+        with MoistureMonitor(self.adc) as moisture:
+            self._sort_item(moisture)
+
+    def _sort_item(self, moisture: MoistureMonitor):
+        # 수분 센서는 물체 안정화 및 금속/AI 검사 중에도 계속 측정한다.
         self.check_health()
         self.trace(2, "측정 준비", f"측정판 {TRAY_HOME}°·분류판 {DIVERTER_HOME}° 대기 위치 확인/복귀")
         self.servos.home()
-        self._state("측정 중", "물체 안정화 및 금속 우선 검사", "blue")
+        self._state("측정 중", "수분 감시 중 · 물체 안정화", "blue")
         self.trace(2, "안정화", f"물체가 흔들리지 않도록 {SETTLE_SECONDS:.1f}초 대기")
         time.sleep(SETTLE_SECONDS)
 
-        # 2. 금속 최우선: 단 한 번의 감지만 있어도 카메라 분류를 호출하지 않는다.
+        moisture.check()
+        # 금속이 감지되면 카메라 재질 판정만 생략한다.
         self.trace(3, "금속 센서", f"GPIO{METAL_GPIO}에서 {METAL_VOTES}회 검사, "
-                   f"{METAL_MIN_HITS}회 이상 감지하면 무조건 캔" if self.metal is not None
+                   f"{METAL_MIN_HITS}회 이상 감지하면 캔 후보" if self.metal is not None
                    else "금속 센서 미연결 → AI 판정으로 진행")
         metal = majority_sensor(self.metal)
-        self.trace(3, "금속 결과", "★ 금속 신호 감지! AI 인식 여부 무관 → 캔 확정" if metal is True else
+        moisture.check()
+        self.trace(3, "금속 결과", "금속 감지 → 캔 후보" if metal is True else
                    ("금속 미감지 → AI로 종류 판정" if metal is False else
                     "금속 센서 미설치 → AI로 종류 판정"))
 
         camera_kind: str | None = None
         camera_reason: str | None = None
         scores: dict[str, float] = {}
-        raw: int | None = None
-        wet: bool | None = None
         if metal is True:
-            self.trace(4, "카메라 AI", "금속이 감지되어 카메라 촬영·AI 분류 결과와 관계없이 캔 → AI 판정 생략")
-            self.trace(5, "수분 센서", "금속 우선 규칙에 따라 수분 검사를 생략")
+            self.trace(4, "카메라 AI", "금속 감지 → AI 판정 생략, 수분 감시 계속")
             self.status.patch(scores={})
         else:
             # 3. 비금속일 때만 AI를 실행한다. 실패 시 배출하지 않고 보류한다.
@@ -1249,22 +1317,15 @@ class Sorter:
             self.status.patch(scores=scores)
             self.trace(4, "카메라 결과", f"{KOREAN[camera_kind]} {scores[camera_kind]:.1%} → "
                        f"{camera_reason or 'AI 판정 기준 통과'}")
-            if self.adc is None:
-                self.trace(5, "수분 센서", "수분 센서 비활성화/미연결 → 검사 생략")
-            else:
-                self.trace(5, "수분 센서", f"ADC {MOISTURE_SAMPLES}회 측정하여 젖음 여부 판정")
-            raw, wet = moisture_sensor(self.adc)
-            if raw is not None:
-                self.trace(5, "수분 결과", f"값 {raw} → {'젖음(배출 보류)' if wet else '마름'}")
-
-        # 4. 금속 판정은 카메라/수분과 무관. 초음파 실측은 시작과 종료에만 실행.
-        final_kind, reason = decide_final(camera_kind, camera_reason, metal, wet)
+        moisture.check()
+        self.trace(5, "수분 검사", "현재까지 수분 반려 기준 미충족, 배출 직전까지 감시 계속")
+        final_kind, reason = decide_final(camera_kind, camera_reason, metal, wet=moisture.wet)
         camera_label = KOREAN[camera_kind] if camera_kind is not None else "생략(금속 우선)"
         if reason:
             self.trace(6, "최종 판정", f"배출 보류! 카메라={camera_label} / 사유={reason}")
             raise SafetyHold(reason)
         if metal is True:
-            self.trace(6, "최종 판정", "★ 금속 감지로 '캔' 확정 (AI 점수·인식 실패·수분 모두 무관)")
+            self.trace(6, "최종 판정", "금속 감지로 재질은 캔, 배출 직전 수분 재확인")
         else:
             self.trace(6, "최종 판정", f"카메라={camera_label} → 최종={KOREAN[final_kind]}, 배출 허용")
 
@@ -1284,7 +1345,7 @@ class Sorter:
                    f"분류판 {diverter_note} {diverter}° → 측정판 {direction} {tray}° "
                    f"→ 복귀 측정판 {TRAY_HOME}° / 분류판 {DIVERTER_HOME}°")
         self._state("배출 중", f"{KOREAN[final_kind]} 배출 동작 중", "blue")
-        self.servos.drop(final_kind)
+        self.servos.drop(final_kind, moisture.confirm_before_drop)
         self.counts[final_kind] += 1
         self._state("배출 동작 완료", f"{KOREAN[final_kind]} 경로로 서보 동작 완료", "green")
         self.status.patch(result=(f"카메라 {camera_label} → 최종 {KOREAN[final_kind]} / "
@@ -1309,7 +1370,7 @@ class Sorter:
         LOG.info("[적재량 시작값 실측] %s", " / ".join(
                  f"{KOREAN[k]} {start_fills[k]['percent']:.1f}%" for k in KOREAN))
         LOG.info("[★ 1회 분류 모드] 물체를 한 번 감지하면 한 번만 분류하고 자동 종료합니다")
-        LOG.info("[출력 안내] 적재량은 시작/종료 1회씩. 금속 우선 → 비금속 AI → 배출·서보 복귀")
+        LOG.info("[출력 안내] 적재량은 시작/종료 1회씩. 수분 감시 → 금속 검사 → 비금속 AI → 배출 직전 수분 확인 → 배출·서보 복귀")
         # 기존의 '처음 IR가 감지 중이면 반드시 해제될 때까지 대기'를 제거한다.
         # 물체를 이미 올린 채 시작했어도 감지 신호가 안정되면 이번 1회로 처리한다.
         if self.ir is not None and bool(self.ir.value):
@@ -1471,13 +1532,13 @@ def run_hardware() -> int:
                 stack.callback(dashboard.close)
             ir = make_entry_sensor(stack)
             metal = make_input(METAL_GPIO, METAL_ACTIVE_LOW, stack)
-            adc = stack.enter_context(MCP3208(**MOISTURE_ADC)) if MOISTURE_ENABLED else None
+            adc = stack.enter_context(MCP3208(**MOISTURE_ADC))
             LOG.info("[장비 초기화] 투입 감지=%s / 금속=GPIO%s / 수분=%s / 측정판=GPIO%d / 분류판=GPIO%d",
                      (f"IR GPIO{IR_GPIO} OR 초음파 TRIG{ENTRY_TRIG_GPIO}/ECHO{ENTRY_ECHO_GPIO} 최대{ENTRY_DETECT_MAX_CM:.0f}cm" if ENTRY_MODE == "both" else
                       f"초음파 TRIG{ENTRY_TRIG_GPIO}/ECHO{ENTRY_ECHO_GPIO} 최대{ENTRY_DETECT_MAX_CM:.0f}cm" if ENTRY_MODE == "ultrasonic" else
                       f"IR GPIO{IR_GPIO}" if ENTRY_MODE == "ir" else "수동"),
                      METAL_GPIO if METAL_GPIO is not None else "미설치",
-                     "활성" if MOISTURE_ENABLED else "비활성", TRAY_GPIO, DIVERTER_GPIO)
+                     "필수", TRAY_GPIO, DIVERTER_GPIO)
             LOG.info("[적재량 측정 일정] 시작 1회 측정 완료 / 운전 중 측정 없음 / 정상 종료 때 1회 재측정")
             LOG.info("[기기 화면] %s", f"http://<라즈베리파이 IP>:{WEB_PORT}" if WEB_ENABLED else "꺼짐")
             Sorter(feed, model, servos, ir, metal, adc, monitor, indicator, status).run()
@@ -1518,8 +1579,13 @@ def self_test() -> None:
     assert decide_camera({"plastic": .34, "can": .20, "paper": .46})[1] is not None
     assert decide_camera({"plastic": .65, "can": .20, "paper": .15})[1] is not None  # 기준(70%) 미달 → 보류
     assert decide_camera({"plastic": .75, "can": .15, "paper": .10}) == ("plastic", None)  # 기준 통과
-    assert decide_final("paper", "AI 신뢰도 부족", True, True) == ("can", None)
-    assert decide_final(None, "카메라 오류", True, True) == ("can", None)
+    for metal in (True, False, None):
+        for kind in (*KOREAN, None):
+            assert decide_final(kind, None, metal, True) == ("unknown", WET_REASON)
+    assert decide_final("paper", "AI 신뢰도 부족", True, True)[1] == WET_REASON
+    assert decide_final(None, "카메라 오류", True, False) == ("can", None)
+    assert decide_final("can", None, True, None)[1] is not None
+    assert wet_from_raw(MOISTURE_WET_RAW)
     assert decide_final("can", None, False, False)[1] is not None
     assert decide_final("paper", None, False, True)[1] is not None
     assert decide_final("plastic", None, False, False) == ("plastic", None)
@@ -1530,7 +1596,7 @@ def self_test() -> None:
     assert percent_full("plastic", (EMPTY_CM["plastic"] + FULL_CM["plastic"]) / 2) == 50.0
     assert abs(sum(interpret_probs([2.0, 1.0, -1.0])) - 1.0) < 1e-10
     assert max(interpret_probs([0.9, 0.05, 0.05])) > .89
-    LOG.info("자가 테스트 통과: 분류/금속 우선/수분 보류/적재량/출력 정규화/GPIO 충돌 검사")
+    LOG.info("자가 테스트 통과: 분류/수분 우선 반려/건조 금속/적재량/출력 정규화/GPIO 충돌 검사")
 
 
 def main() -> int:
@@ -1557,7 +1623,10 @@ def main() -> int:
                f"(TRIG BCM{ENTRY_TRIG_GPIO}, ECHO BCM{ENTRY_ECHO_GPIO}, 최대 {ENTRY_DETECT_MAX_CM:.0f}cm)"
                if ENTRY_MODE == "ultrasonic" else f"(IR BCM{IR_GPIO})" if ENTRY_MODE == "ir" else ""))
         print(f"금속 BCM{METAL_GPIO}")
-        print(f"수분 사용={MOISTURE_ENABLED}, 분류 RGB={STATUS_RGB_PINS}, "
+        wet_op = ">=" if MOISTURE_WET_WHEN_HIGH else "<="
+        print(f"수분 검사: MCP3208 CH{MOISTURE_ADC['channel']}, ADC {wet_op} {MOISTURE_WET_RAW} "
+              f"상태가 {MOISTURE_CONFIRM_SECONDS:g}초 연속이면 반려")
+        print(f"분류 RGB={STATUS_RGB_PINS}, "
               f"적재량 RGB={FILL_RGB_PINS}, 웹 포트 {WEB_PORT}")
         return 0
     if opts.self_test:
