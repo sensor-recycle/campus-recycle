@@ -87,7 +87,7 @@ ULTRA_MIN_CM, ULTRA_MAX_CM = 2.0, 400.0
 ENTRY_MODE = "both"  # "both"(IR OR 초음파) / "ultrasonic" / "ir" / "manual"
 # GPIO23은 실제로 RGB1 초록에 사용하므로 투입용 초음파 TRIG를 GPIO5로 변경.
 # 중요: 투입 초음파의 TRIG 선도 실제로 BCM23에서 BCM5(물리 29)로 옮겨야 합니다.
-ENTRY_TRIG_GPIO, ENTRY_ECHO_GPIO = 5, 24
+ENTRY_TRIG_GPIO, ENTRY_ECHO_GPIO = 15, 24
 ENTRY_DETECT_MAX_CM = 35.0    # 최대 감지 거리. 더 멀리 감지하려면 이 값 조절
 ENTRY_RELEASE_CM = ENTRY_DETECT_MAX_CM + 5.0  # 감지 범위를 늘려도 해제 거리는 자동으로 5cm 더 크게
 ENTRY_BACKGROUND_DELTA_CM = 2.5  # 빈 측정판보다 최소 2.5cm 가까워야 물체로 판정
