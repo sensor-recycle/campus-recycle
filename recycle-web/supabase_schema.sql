@@ -24,10 +24,15 @@ create index if not exists records_student_idx on records (student_id, created_a
 
 -- 지금 수거함에 연결된 학생 (수거함 1대 = 항상 1줄)
 create table if not exists bin_session (
-    id         integer primary key check (id = 1),
-    student_id text,
-    started_at text
+    id           integer primary key check (id = 1),
+    student_id   text,
+    started_at   text,
+    requested_at text,   -- 웹에서 '수거 시작'을 누른 시각
+    state        text    -- requested → running → ready → done
 );
+-- 이미 테이블을 만들어 둔 경우: '수거 시작' 버튼용 칸 두 개만 추가된다.
+alter table bin_session add column if not exists requested_at text;
+alter table bin_session add column if not exists state text;
 
 -- 공개(anon) 키로는 읽거나 쓸 수 없게 막는다. 웹과 파이는 secret(service_role) 키를 쓴다.
 alter table users       enable row level security;

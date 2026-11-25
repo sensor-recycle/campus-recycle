@@ -74,6 +74,8 @@ def register_user(student_id, department):
 # 수거함 QR을 찍고 로그인한 학생이 SESSION_SECONDS 동안 "지금 버리는 사람"이 된다.
 # 라즈베리 파이는 active_student()로 그 학번을 얻어 save_record()에 넘기면 된다.
 SESSION_SECONDS = 180
+# 웹의 '수거 시작'으로 파이가 분류를 진행 중인 상태 (아래 "수거 시작 버튼" 구역 참고)
+RUN_STATES = ("running", "ready")
 
 
 def start_session(student_id):
@@ -99,7 +101,11 @@ def end_session(student_id):
 def active_student():
     """지금 수거함에 연결된 학번. 없거나 시간이 지났으면 None."""
     active = read_store().get("active")
-    if not active:
+    if not active or not active.get("student_id"):
+        return None
+    if active.get("state") in RUN_STATES:  # 파이가 이 학생의 요청으로 분류 중
+        return active["student_id"]
+    if not active.get("started_at"):
         return None
     started = datetime.fromisoformat(active["started_at"])
     if datetime.now(KST) - started > timedelta(seconds=SESSION_SECONDS):
@@ -240,8 +246,12 @@ def _db_end_session(student_id):
 
 
 def _db_active_student():
-    rows = _db("GET", "bin_session", {"select": "student_id,started_at", "id": "eq.1"})
-    if not rows or not rows[0]["student_id"]:
+    rows = _db("GET", "bin_session", {"select": "*", "id": "eq.1"})
+    if not rows or not rows[0].get("student_id"):
+        return None
+    if rows[0].get("state") in RUN_STATES:  # 파이가 이 학생의 요청으로 분류 중
+        return rows[0]["student_id"]
+    if not rows[0].get("started_at"):
         return None
     started = datetime.fromisoformat(rows[0]["started_at"])
     if datetime.now(KST) - started > timedelta(seconds=SESSION_SECONDS):
@@ -290,3 +300,85 @@ if SUPABASE:
         _db_init_data, _db_register_user, _db_load_records, _db_save_record)
     start_session, end_session, active_student = (
         _db_start_session, _db_end_session, _db_active_student)
+
+
+# ── 웹의 '수거 시작' 버튼 ↔ 라즈베리 파이 ─────────────────────────────────
+# 웹(클라우드)은 파이에 직접 접속할 수 없어서, 버튼을 누르면 DB에 요청만 남긴다.
+# 파이의 대기 프로그램(smart_bin/bin_agent.py)이 그 요청을 보고 main.py를 1회 실행한다.
+#   state: requested(버튼 누름) → running(파이가 실행 시작) → ready(투입 대기) → done(끝)
+START_WAIT_SECONDS = 20  # 버튼을 누른 뒤 파이가 응답하기를 기다려 주는 시간
+
+
+def _read_session():
+    if SUPABASE:
+        rows = _db("GET", "bin_session", {"select": "*", "id": "eq.1"})
+        return rows[0] if rows else {}
+    return read_store().get("active") or {}
+
+
+def _write_session(fields, only_if_state=None):
+    """수거함 상태를 고친다. only_if_state를 주면 지금 그 상태일 때만 고치고 성공 여부를 돌려준다."""
+    if SUPABASE:
+        if only_if_state is None:
+            _db("POST", "bin_session", {"on_conflict": "id"}, {"id": 1, **fields},
+                prefer="resolution=merge-duplicates")
+            return True
+        return bool(_db("PATCH", "bin_session", {"id": "eq.1", "state": f"eq.{only_if_state}"},
+                        fields, prefer="return=representation"))
+    with write_lock():
+        store = read_store()
+        active = store.get("active") or {}
+        if only_if_state is not None and active.get("state") != only_if_state:
+            return False
+        active.update(fields)
+        store["active"] = active
+        write_store(store)
+        return True
+
+
+def bin_status(student_id):
+    """웹 화면용 수거함 상태: idle / waking / no_response / running / ready / busy"""
+    session = _read_session()
+    state, requested = session.get("state"), session.get("requested_at")
+    if state not in ("requested",) + RUN_STATES or not requested:
+        return "idle"
+    age = (datetime.now(KST) - datetime.fromisoformat(requested)).total_seconds()
+    mine = session.get("student_id") == student_id
+    if state == "requested":  # 버튼은 눌렀는데 파이가 아직 가져가지 않음
+        if age <= START_WAIT_SECONDS:
+            return "waking" if mine else "busy"
+        return "no_response" if mine and age <= SESSION_SECONDS else "idle"
+    if age > SESSION_SECONDS:  # 파이가 끝났다고 알리지 못한 채 시간이 지남
+        return "idle"
+    return state if mine else "busy"
+
+
+def request_start(student_id):
+    """웹의 '수거 시작': 이 학생을 수거함에 연결하고 파이에게 1회 분류를 요청한다. 사용 중이면 False."""
+    if bin_status(student_id) == "busy":
+        return False
+    start_session(student_id)
+    _write_session({
+        "requested_at": datetime.now(KST).isoformat(timespec="seconds"), "state": "requested",
+    })
+    return True
+
+
+def claim_start():
+    """(파이) 새 '수거 시작' 요청이 있으면 가져가고 그 학번을 돌려준다. 없으면 None."""
+    session = _read_session()
+    if session.get("state") != "requested":
+        return None
+    if not _write_session({"state": "running"}, only_if_state="requested"):
+        return None
+    return session.get("student_id")
+
+
+def mark_ready():
+    """(파이) main.py가 투입 대기에 들어갔음을 웹에 알린다."""
+    return _write_session({"state": "ready"}, only_if_state="running")
+
+
+def finish_run():
+    """(파이) 1회 분류가 끝났음을 알린다. 대기 프로그램을 켤 때 남은 요청을 지우는 데도 쓴다."""
+    _write_session({"state": "done"})

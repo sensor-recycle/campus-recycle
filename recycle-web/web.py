@@ -5,8 +5,8 @@ import streamlit as st
 
 import ui
 from data import (
-    KST, RULES, active_student, end_session, init_data, load_records,
-    register_user, start_session,
+    KST, RULES, bin_status, end_session, init_data, load_records,
+    register_user, request_start, start_session,
 )
 
 
@@ -60,7 +60,7 @@ if "user" not in st.session_state:
                 "student_id": student_id,
                 "department": department,
             }
-            if VIA_BIN:
+            if VIA_BIN and bin_status(student_id) != "busy":
                 start_session(student_id)
             st.rerun()
 
@@ -79,33 +79,41 @@ with st.container(key="userbar"):
         del st.session_state["user"]
         st.rerun()
 
-# 수거함 연결 상태
-connected = VIA_BIN and active_student() == user["student_id"]
+# 수거함 상태 (수거함 QR로 들어온 경우에만 '수거 시작'을 쓸 수 있다)
+BIN_MESSAGES = {
+    None: "수거함의 QR을 찍고 들어오면 배출이 적립돼요.",
+    "idle": "분리수거 하는 당신은 멋진 눈송이!",
+    "waking": "수거함을 깨우는 중이에요. 잠시만 기다려주세요!",
+    "running": "수거함을 준비하고 있어요. 잠시만 기다려주세요!",
+    "ready": "준비 완료! 수거함에 물건을 올려주세요.",
+    "no_response": "수거함이 응답하지 않아요. 전원과 인터넷을 확인한 뒤 다시 눌러주세요.",
+    "busy": "다른 학생이 사용 중이에요. 잠시만 기다려주세요.",
+}
+status = bin_status(user["student_id"]) if VIA_BIN else None
 
 with st.container(key="notice"):
-    if connected:
-        st.caption("분리수거 하는 당신은 멋진 눈송이!")
-    elif VIA_BIN:
-        st.caption("연결 시간이 끝났어요. 아래 버튼으로 다시 연결해주세요.")
-    else:
-        st.caption("수거함의 QR을 찍고 들어오면 배출이 적립돼요.")
+    st.caption(BIN_MESSAGES[status])
 
-if VIA_BIN and not connected:
-    if st.button("수거함 다시 연결", type="primary", use_container_width=True):
-        start_session(user["student_id"])
-        st.rerun()
+if status in ("idle", "no_response"):
+    if st.button("수거 시작", type="primary", use_container_width=True):
+        try:
+            request_start(user["student_id"])
+        except Exception:
+            st.error("수거함에 신호를 보내지 못했어요. 잠시 후 다시 눌러주세요.")
+        else:
+            st.rerun()
 
 
 @st.fragment(run_every=2)
 def watch_bin(student_id, seen):
-    # 연결된 동안 2초마다 확인해서, 새 배출이 기록되거나 연결이 끝나면 화면을 새로 그린다.
-    now = (len(load_records(student_id)), active_student() == student_id)
+    # 2초마다 확인해서, 새 배출이 기록되거나 수거함 상태가 바뀌면 화면을 새로 그린다.
+    now = (len(load_records(student_id)), bin_status(student_id))
     if now != seen:
         st.rerun()
 
 
-if connected:
-    watch_bin(user["student_id"], (len(load_records(user["student_id"])), True))
+if VIA_BIN:
+    watch_bin(user["student_id"], (len(load_records(user["student_id"])), status))
 
 results_tab, history_tab = st.tabs(MENU)
 

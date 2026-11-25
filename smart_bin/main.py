@@ -166,6 +166,20 @@ def record_reward(kind: str) -> None:
         LOG.exception("[리워드] 적립 실패 (분류 동작에는 영향 없음)")
 
 
+def report_ready() -> None:
+    """투입 대기에 들어갔음을 웹에 알린다 (웹의 '수거 시작'으로 실행된 경우 화면에 '준비 완료' 표시).
+
+    별도 스레드에서 호출하며, 실패해도 분류기 동작에는 영향을 주지 않는다.
+    """
+    try:
+        if str(REWARD_DIR) not in sys.path:
+            sys.path.insert(0, str(REWARD_DIR))
+        from data import mark_ready
+        mark_ready()
+    except Exception:
+        LOG.exception("[리워드] 준비 완료 알림 실패 (분류 동작에는 영향 없음)")
+
+
 def fmt_scores(scores: dict[str, float]) -> str:
     return ", ".join(f"{KOREAN[k]} {scores[k]:.1%}" for k in KOREAN)
 
@@ -1302,6 +1316,7 @@ class Sorter:
             LOG.warning("[투입 센서 시작 상태] 시작부터 감지 신호가 있습니다. "
                         "물체를 이미 올렸다면 1회 분류를 진행합니다. "
                         "아무것도 없다면 센서 극성/배선을 확인하고 즉시 Ctrl+C로 중단하세요")
+        threading.Thread(target=report_ready, name="report-ready", daemon=True).start()
         if not wait_for_object(self.ir, self.check_health):
             LOG.info("[1회 분류 취소] 물체 투입 전 사용자가 종료를 선택했습니다")
             return
