@@ -70,12 +70,17 @@ def main():
     run_timeout = data.SESSION_SECONDS - 15   # 웹의 연결 시간(3분) 안에 끝나도록
 
     try:
-        data.finish_run()   # 꺼져 있던 동안 남은 요청은 지운다 (뒤늦게 혼자 시작하지 않도록)
-    except Exception:
-        LOG.exception("시작할 때 DB에 연결하지 못했습니다. 인터넷을 확인하세요 (계속 재시도합니다)")
-    LOG.info("웹의 '수거 시작'을 기다립니다. 실행할 파일: %s (종료: Ctrl+C)", MAIN_PATH)
+        # 꺼져 있던 동안 남은 요청은 지운다 (뒤늦게 혼자 시작하지 않도록).
+        # 부팅 직후에는 인터넷이 아직 안 붙었을 수 있으니, 될 때까지 기다린 다음에 대기를 시작한다.
+        while True:
+            try:
+                data.finish_run()
+                break
+            except Exception as error:
+                LOG.warning("DB에 연결하지 못했습니다: %s → 5초 뒤 재시도 (인터넷 확인)", type(error).__name__)
+                time.sleep(5)
+        LOG.info("웹의 '수거 시작'을 기다립니다. 실행할 파일: %s (종료: Ctrl+C)", MAIN_PATH)
 
-    try:
         while True:
             try:
                 student_id = data.claim_start()
