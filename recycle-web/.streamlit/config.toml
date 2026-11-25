@@ -1,9 +1,14 @@
 [theme]
 base = "light"
-primaryColor = "#166534"
-backgroundColor = "#FFFFFF"
-secondaryBackgroundColor = "#F5F5F5"
-textColor = "#111111"
+# 숙명여자대학교 UI 전용 색상 — Sookmyung Royal Blue (Pantone 287C)
+primaryColor = "#003087"
+backgroundColor = "#F3F7FE"
+secondaryBackgroundColor = "#EAF2FE"
+textColor = "#14213D"
+borderColor = "#D5E1F5"
+dataframeBorderColor = "#E3EBF8"
+dataframeHeaderBackgroundColor = "#EAF2FE"
+baseRadius = "large"
 font = "Pretendard"
 
 [[theme.fontFaces]]

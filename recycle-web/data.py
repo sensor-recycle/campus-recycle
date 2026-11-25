@@ -6,8 +6,6 @@ from pathlib import Path
 from tempfile import NamedTemporaryFile
 from uuid import uuid4
 
-import pandas as pd
-
 KST = timezone(timedelta(hours=9))
 # 재질별 (하루 적립 횟수, 배출 1회당 포인트)
 RULES = {"플라스틱": (5, 10), "캔": (5, 10), "종이": (3, 5)}
@@ -71,6 +69,43 @@ def register_user(student_id, department):
         write_store(store)
         return True
 
+# ── 수거함 연결 (QR) ──────────────────────────────────────────────────────
+# 수거함 QR을 찍고 로그인한 학생이 SESSION_SECONDS 동안 "지금 버리는 사람"이 된다.
+# 라즈베리 파이는 active_student()로 그 학번을 얻어 save_record()에 넘기면 된다.
+SESSION_SECONDS = 180
+
+
+def start_session(student_id):
+    with write_lock():
+        store = read_store()
+        if student_id not in store["users"]:
+            raise ValueError("등록되지 않은 사용자입니다.")
+        store["active"] = {
+            "student_id": student_id,
+            "started_at": datetime.now(KST).isoformat(timespec="seconds"),
+        }
+        write_store(store)
+
+
+def end_session(student_id):
+    with write_lock():
+        store = read_store()
+        if (store.get("active") or {}).get("student_id") == student_id:
+            store["active"] = None
+            write_store(store)
+
+
+def active_student():
+    """지금 수거함에 연결된 학번. 없거나 시간이 지났으면 None."""
+    active = read_store().get("active")
+    if not active:
+        return None
+    started = datetime.fromisoformat(active["started_at"])
+    if datetime.now(KST) - started > timedelta(seconds=SESSION_SECONDS):
+        return None
+    return active["student_id"]
+
+
 # 배출 현황 저장 및 포인트 반환
 def save_record(student_id, material, quantity=1):
     if material not in RULES:
@@ -107,6 +142,8 @@ def save_record(student_id, material, quantity=1):
 
 
 def load_records(student_id=None):
+    import pandas as pd  # 웹에서만 필요 (라즈베리 파이에는 pandas가 없어도 된다)
+
     records = [row for row in read_store()["records"] if row["points"] > 0]
     if student_id is not None:
         records = [row for row in records if row["student_id"] == student_id]
@@ -114,3 +151,140 @@ def load_records(student_id=None):
     return pd.DataFrame(records[::-1], columns=COLUMNS).sort_values(
         "created_at", ascending=False, kind="stable", ignore_index=True
     )
+
+
+# ── 공용 DB (Supabase) ────────────────────────────────────────────────────
+# 웹(Streamlit Cloud)과 라즈베리 파이는 서로 다른 기기라 위의 JSON 파일을 함께 쓸 수 없다.
+# SUPABASE_URL / SUPABASE_KEY 가 설정돼 있으면 아래 _db_* 함수들이 위의 JSON 버전을 대신하고,
+# 설정이 없으면 지금까지처럼 이 폴더의 JSON 파일을 쓴다. 규칙(한도·포인트·연결 시간)은 같다.
+# 테이블은 supabase_schema.sql 을 Supabase SQL Editor 에 한 번 붙여 넣어 만든다.
+def _supabase_config():
+    url, key = os.environ.get("SUPABASE_URL"), os.environ.get("SUPABASE_KEY")
+    if not (url and key):  # 로컬 실행 · 라즈베리 파이: 이 폴더의 .streamlit/secrets.toml
+        try:
+            import tomllib
+            secrets = tomllib.loads(
+                (Path(__file__).parent / ".streamlit" / "secrets.toml").read_text(encoding="utf-8")
+            )
+            url, key = secrets.get("SUPABASE_URL"), secrets.get("SUPABASE_KEY")
+        except (ImportError, OSError, ValueError):
+            pass
+    if not (url and key):  # Streamlit Cloud: 앱 설정의 Secrets
+        try:
+            import streamlit as st
+            if st.secrets.load_if_toml_exists():
+                url, key = st.secrets.get("SUPABASE_URL"), st.secrets.get("SUPABASE_KEY")
+        except Exception:
+            pass
+    return (str(url).rstrip("/"), str(key)) if url and key else None
+
+
+SUPABASE = _supabase_config()
+_HTTP = None
+
+
+def _db(method, table, params=None, body=None, prefer=None):
+    global _HTTP
+    import requests
+
+    if _HTTP is None:
+        _HTTP = requests.Session()
+    url, key = SUPABASE
+    headers = {"apikey": key, "Authorization": f"Bearer {key}"}
+    if prefer:
+        headers["Prefer"] = prefer
+    response = _HTTP.request(
+        method, f"{url}/rest/v1/{table}", params=params, json=body, headers=headers, timeout=8
+    )
+    response.raise_for_status()
+    return response.json() if response.content else []
+
+
+def _db_department(student_id):
+    rows = _db("GET", "users", {"select": "department", "student_id": f"eq.{student_id}"})
+    return rows[0]["department"] if rows else None
+
+
+def _db_init_data():
+    pass
+
+
+def _db_register_user(student_id, department):
+    saved = _db_department(student_id)
+    if saved is None:
+        import requests
+        try:
+            _db("POST", "users", body={"student_id": student_id, "department": department})
+            return True
+        except requests.HTTPError as error:
+            if error.response is None or error.response.status_code != 409:
+                raise
+            saved = _db_department(student_id)  # 같은 학번이 방금 다른 곳에서 등록된 경우
+    return saved == department
+
+
+def _db_start_session(student_id):
+    if _db_department(student_id) is None:
+        raise ValueError("등록되지 않은 사용자입니다.")
+    _db("POST", "bin_session", {"on_conflict": "id"}, {
+        "id": 1, "student_id": student_id,
+        "started_at": datetime.now(KST).isoformat(timespec="seconds"),
+    }, prefer="resolution=merge-duplicates")
+
+
+def _db_end_session(student_id):
+    _db("PATCH", "bin_session", {"id": "eq.1", "student_id": f"eq.{student_id}"},
+        {"student_id": None})
+
+
+def _db_active_student():
+    rows = _db("GET", "bin_session", {"select": "student_id,started_at", "id": "eq.1"})
+    if not rows or not rows[0]["student_id"]:
+        return None
+    started = datetime.fromisoformat(rows[0]["started_at"])
+    if datetime.now(KST) - started > timedelta(seconds=SESSION_SECONDS):
+        return None
+    return rows[0]["student_id"]
+
+
+def _db_save_record(student_id, material, quantity=1):
+    if material not in RULES:
+        raise ValueError("지원하지 않는 재질입니다.")
+    if isinstance(quantity, bool) or int(quantity) != quantity or quantity < 1:
+        raise ValueError("수량은 1 이상의 정수여야 합니다.")
+
+    department = _db_department(student_id)
+    if department is None:
+        raise ValueError("등록되지 않은 사용자입니다.")
+
+    now = datetime.now(KST)
+    limit, reward = RULES[material]
+    rewarded = _db("GET", "records", {
+        "select": "event_id", "student_id": f"eq.{student_id}", "material": f"eq.{material}",
+        "created_at": f"like.{now.date().isoformat()}*", "points": "gt.0",
+    })
+    if len(rewarded) >= limit:
+        return 0
+
+    _db("POST", "records", body={
+        "event_id": str(uuid4()), "student_id": student_id, "department": department,
+        "material": material, "quantity": int(quantity), "points": reward,
+        "created_at": now.isoformat(timespec="seconds"),
+    })
+    return reward
+
+
+def _db_load_records(student_id=None):
+    import pandas as pd
+
+    params = {"select": ",".join(COLUMNS), "points": "gt.0", "order": "created_at.desc,seq.desc"}
+    if student_id is not None:
+        params["student_id"] = f"eq.{student_id}"
+    return pd.DataFrame(_db("GET", "records", params), columns=COLUMNS)
+
+
+if SUPABASE:
+    init_data, register_user, load_records, save_record = (
+        _db_init_data, _db_register_user, _db_load_records, _db_save_record)
+    start_session, end_session, active_student = (
+        _db_start_session, _db_end_session, _db_active_student)

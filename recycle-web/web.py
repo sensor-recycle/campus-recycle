@@ -3,11 +3,16 @@ from datetime import datetime, timedelta
 import pandas as pd
 import streamlit as st
 
-from data import KST, RULES, init_data, load_records, register_user
+import ui
+from data import (
+    KST, RULES, active_student, end_session, init_data, load_records,
+    register_user, start_session,
+)
 
 
 st.set_page_config(
     page_title="센서 3팀 - 캠퍼스 스마트 분리수거함",
+    page_icon="❄️",
     layout="centered",
 )
 init_data()
@@ -15,104 +20,25 @@ init_data()
 SUBJECT = ["가족자원경영학과", "경영학부", "경제학부", "공예과", "관현악과", "교육학부", "글로벌서비스학부", "글로벌협력전공", "기계시스템학부", "데이터사이언스전공", "독일언어·문화학과", "르꼬르동블루외식경영전공", "무용과", "문헌정보학과", "문화관광외식학부", "문화관광학전공", "미디어학부", "미디어학전공", "법학부", "사회심리학과", "산업디자인과", "생명시스템학부", "성악과", "소비자경제학과", "소프트웨어학부", "수학과", "숙명-CQU 경영국제학부", "시각·영상디자인과", "식품영양학과", "신소재물리학부", "아동복지학부", "앙트러프러너십전공", "약학부", "역사문화학과", "영어영문학부", "영어영문학전공", "융합국제학부", "의류학과", "인공지능공학부", "일본학과", "자유전공학부", "작곡과", "정치외교학과", "중어중문학부", "지능형전자시스템학부", "첨단공학부", "체육교육과", "컴퓨터과학전공", "테슬(TESL)전공", "통계학과", "프랑스언어·문화학과", "피아노과", "한국어문학부", "한류국제학부", "행정학과", "홍보광고학과", "화공생명공학부", "화학과", "환경디자인과", "회화과"]
 MATERIAL = ["플라스틱", "캔", "종이"]
 MENU = ["내 실적", "배출 내역·학과 현황"]
+# 수거함에 붙인 QR 주소(…/?bin=1)로 들어온 접속만 수거함과 연결한다.
+VIA_BIN = "bin" in st.query_params
 
 
-st.markdown("""
-<style>
-@import url("https://cdn.jsdelivr.net/gh/orioncactus/pretendard@v1.3.9/dist/web/static/pretendard.min.css");
-
-html, body, .stApp, .stApp * :not([class*="material"]):not([data-testid="stIconMaterial"]) {
-    font-family: "Pretendard", sans-serif;
-}
-
-.block-container {
-    max-width: 480px;
-    padding: 2rem 1.25rem 3rem;
-}
-
-h1, h2, h3 {
-    color: #166534;
-    font-weight: 700;
-    letter-spacing: -0.02em;
-}
-
-[data-testid="stCaptionContainer"],
-[data-testid="stCaptionContainer"] p {
-    color: #5F6B63;
-}
-
-[data-testid="stForm"] {
-    border: 1px solid #DDE5DF;
-    border-radius: 12px;
-}
-
-[data-testid="stMetric"] {
-    background: #F5F5F5;
-    border-radius: 12px;
-    padding: 16px 18px;
-}
-
-[data-testid="stMetricLabel"] p {
-    color: #111111;
-    font-size: 1rem;
-    font-weight: 500;
-}
-
-[data-testid="stMetricValue"] {
-    padding-top: 8px;
-    color: #166534;
-    font-weight: 700;
-}
-
-:is(.st-key-empty_results, .st-key-empty_history, .st-key-empty_ranking)
-[data-testid="stAlertContainer"] {
-    background-color: #EDF2E8;
-}
-
-:is(.st-key-empty_results, .st-key-empty_history, .st-key-empty_ranking)
-[data-testid="stAlert"] p {
-    color: #166534;
-}
-
-.stButton > button, .stFormSubmitButton > button {
-    border-radius: 10px;
-}
-
-.st-key-page_header { padding-bottom: 1.5rem; }
-.st-key-page_header h1 { padding-bottom: 0.75rem; }
-[data-testid="stTabPanel"] { padding-top: 1rem; }
-
-.st-key-userbar [data-testid="stHorizontalBlock"] { justify-content: space-between; align-items: center; }
-.st-key-userbar [data-testid="stColumn"] { flex: 0 0 auto !important; width: auto !important; }
-.st-key-userbar .stButton > button {
-    min-height: 0; width: auto; padding: 0.3rem 0.75rem;
-    font-size: 0.8rem; font-weight: 500; border-radius: 999px; white-space: nowrap;
-}
-
-[data-testid="stHorizontalBlock"] { flex-wrap: nowrap !important; gap: 0.5rem; }
-[data-testid="stColumn"] { min-width: 0 !important; }
-[data-testid="stMetric"] { padding: 14px 12px; }
-[data-testid="stMetricLabel"] p { font-size: 0.9rem; }
-[data-testid="stMetricValue"] { font-size: 1.35rem; }
-
-.stButton > button, .stFormSubmitButton > button { min-height: 48px; }
-.st-key-userbar .stButton > button { min-height: 0; }
-
-@media (max-width: 480px) {
-    .block-container { padding-inline: 1rem; }
-}
-</style>
-""", unsafe_allow_html=True)
+ui.inject_css()
 
 
 with st.container(key="page_header"):
-    st.title("캠퍼스 스마트 분리수거")
-    st.caption("개인 배출 내역과 학과별 실적을 조회하세요.")
+    ui.hero(
+        "캠퍼스 스마트 분리수거",
+        "개인 배출 내역과 학과별 실적을 조회하세요.",
+        mascot="cheer" if "user" in st.session_state else "ani",
+    )
 
 
 # 로그인 화면
 if "user" not in st.session_state:
-    st.subheader("사용자 정보")
+    with st.container(key="sec_login"):
+        st.subheader("사용자 정보")
 
     with st.form("login_form"):
         student_id = st.text_input(
@@ -134,6 +60,8 @@ if "user" not in st.session_state:
                 "student_id": student_id,
                 "department": department,
             }
+            if VIA_BIN:
+                start_session(student_id)
             st.rerun()
 
     st.stop()
@@ -144,12 +72,41 @@ user = st.session_state.user
 
 with st.container(key="userbar"):
     info_col, switch_col = st.columns([4, 1], vertical_alignment="center")
-    info_col.write(f"**{user['department']}** · {user['student_id']}")
+    with info_col:
+        ui.user_chip(user["department"], user["student_id"])
     if switch_col.button("사용자 변경"):
+        end_session(user["student_id"])
         del st.session_state["user"]
         st.rerun()
 
-st.caption("센서 연결 전에는 새 배출 기록이 표시되지 않아요.") # 수정할지 말지 고민..
+# 수거함 연결 상태
+connected = VIA_BIN and active_student() == user["student_id"]
+
+with st.container(key="notice"):
+    if connected:
+        st.caption("분리수거 하는 당신은 멋진 눈송이!")
+    elif VIA_BIN:
+        st.caption("연결 시간이 끝났어요. 아래 버튼으로 다시 연결해주세요.")
+    else:
+        st.caption("수거함의 QR을 찍고 들어오면 배출이 적립돼요.")
+
+if VIA_BIN and not connected:
+    if st.button("수거함 다시 연결", type="primary", use_container_width=True):
+        start_session(user["student_id"])
+        st.rerun()
+
+
+@st.fragment(run_every=2)
+def watch_bin(student_id, seen):
+    # 연결된 동안 2초마다 확인해서, 새 배출이 기록되거나 연결이 끝나면 화면을 새로 그린다.
+    now = (len(load_records(student_id)), active_student() == student_id)
+    if now != seen:
+        st.rerun()
+
+
+if connected:
+    watch_bin(user["student_id"], (len(load_records(user["student_id"])), True))
+
 results_tab, history_tab = st.tabs(MENU)
 
 # 내 실적
@@ -158,30 +115,33 @@ with results_tab:
 
     st.subheader("내 실적")
     today = datetime.now(KST).date().isoformat()
-    st.caption("오늘 적립 횟수 · 한국시간 자정 초기화")
+    daily = []
     for name, (limit, reward) in RULES.items():
         used = len(mine[(mine["material"] == name) & (mine["points"] > 0)
                         & (mine["created_at"].astype(str).str.startswith(today))])
-        st.write(f"{name}  {used}/{limit}회 · 1회 {reward}P")
+        daily.append((name, used, limit, reward))
+    ui.daily_card("오늘 적립 횟수", "한국시간 자정 초기화", daily)
     st.caption("일일 한도 내의 배출만 수거량과 내역에 기록돼요.")
     st.caption("전체 기간 누적")
-    st.metric("누적 환경 포인트", f"{int(mine['points'].sum()):,} P")
+    ui.points_card("누적 환경 포인트", int(mine["points"].sum()))
 
-    col1, col2, col3 = st.columns(3)
-    for col, name in zip((col1, col2, col3), MATERIAL):
+    totals = []
+    for name in MATERIAL:
         count = mine.loc[mine["material"] == name, "quantity"].sum()
-        col.metric(name, f"{int(count):,}" + ("건" if name == "종이" else "개"))
+        totals.append((name, int(count), "건" if name == "종이" else "개"))
+    ui.material_cards(totals)
 
     if mine.empty:
         with st.container(key="empty_results"):
-            st.info("아직 등록된 실적이 없습니다.")
+            ui.empty_state("아직 등록된 실적이 없습니다.")
 
 
 # 배출 내역 및 학과 현황
 with history_tab:
     mine = load_records(user["student_id"])
 
-    st.subheader("배출 내역")
+    with st.container(key="sec_history"):
+        st.subheader("배출 내역")
     period = st.selectbox("조회 기간", ["전체", "최근 7일", "최근 30일"])
 
     filtered = mine
@@ -192,7 +152,7 @@ with history_tab:
 
     if filtered.empty:
         with st.container(key="empty_history"):
-            st.info("선택한 기간에 배출 내역이 존재하지 않습니다.")
+            ui.empty_state("선택한 기간에 배출 내역이 존재하지 않습니다.")
     else:
         history = pd.DataFrame({
             "배출 일시": filtered["created_at"].map(
@@ -214,7 +174,7 @@ with history_tab:
     records = load_records()
     if records.empty:
         with st.container(key="empty_ranking"):
-            st.info("아직 등록된 학과별 실적이 없습니다.")
+            ui.empty_state("아직 등록된 학과별 실적이 없습니다.")
     else:
         ranking = (
             records.groupby("department", as_index=False)
