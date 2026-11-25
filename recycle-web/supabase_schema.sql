@@ -28,7 +28,7 @@ create table if not exists bin_session (
     student_id   text,
     started_at   text,
     requested_at text,   -- 웹에서 '수거 시작'을 누른 시각
-    state        text    -- requested → running → ready → done
+    state        text    -- requested → running → ready → sorted / over_limit / done
 );
 -- 이미 테이블을 만들어 둔 경우: '수거 시작' 버튼용 칸 두 개만 추가된다.
 alter table bin_session add column if not exists requested_at text;

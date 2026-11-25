@@ -88,13 +88,15 @@ BIN_MESSAGES = {
     "ready": "준비 완료! 수거함에 물건을 올려주세요.",
     "no_response": "수거함이 응답하지 않아요. 전원과 인터넷을 확인한 뒤 다시 눌러주세요.",
     "busy": "다른 학생이 사용 중이에요. 잠시만 기다려주세요.",
+    "sorted": "분류가 완료되었습니다.",
+    "over_limit": "일일 포인트 적립 횟수를 초과하셨습니다.",
 }
 status = bin_status(user["student_id"]) if VIA_BIN else None
 
 with st.container(key="notice"):
     st.caption(BIN_MESSAGES[status])
 
-if status in ("idle", "no_response"):
+if status in ("idle", "no_response", "sorted", "over_limit"):
     if st.button("수거 시작", type="primary", use_container_width=True):
         try:
             request_start(user["student_id"])

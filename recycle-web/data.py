@@ -299,8 +299,11 @@ if SUPABASE:
 # ── 웹의 '수거 시작' 버튼 ↔ 라즈베리 파이 ─────────────────────────────────
 # 웹(클라우드)은 파이에 직접 접속할 수 없어서, 버튼을 누르면 DB에 요청만 남긴다.
 # 파이의 대기 프로그램(smart_bin/bin_agent.py)이 그 요청을 보고 main.py를 1회 실행한다.
-#   state: requested(버튼 누름) → running(파이가 실행 시작) → ready(투입 대기) → done(끝)
+#   state: requested(버튼 누름) → running(파이가 실행 시작) → ready(투입 대기)
+#          → sorted(분류 완료·적립) / over_limit(분류했지만 일일 한도 초과) / done(분류 없이 끝)
 START_WAIT_SECONDS = 20  # 버튼을 누른 뒤 파이가 응답하기를 기다려 주는 시간
+RESULT_STATES = ("sorted", "over_limit")
+RESULT_SHOW_SECONDS = 300  # 버튼을 누른 뒤 이 시간까지 분류 결과 메시지를 웹에 보여 준다
 
 
 def _read_session():
@@ -331,13 +334,15 @@ def _write_session(fields, only_if_state=None):
 
 
 def bin_status(student_id):
-    """웹 화면용 수거함 상태: idle / waking / no_response / running / ready / busy"""
+    """웹 화면용 수거함 상태: idle / waking / no_response / running / ready / busy / sorted / over_limit"""
     session = _read_session()
     state, requested = session.get("state"), session.get("requested_at")
-    if state not in ("requested",) + RUN_STATES or not requested:
+    if state not in ("requested",) + RUN_STATES + RESULT_STATES or not requested:
         return "idle"
     age = (datetime.now(KST) - datetime.fromisoformat(requested)).total_seconds()
     mine = session.get("student_id") == student_id
+    if state in RESULT_STATES:  # 방금 끝난 분류의 결과는 그 학생에게만 잠시 보여 준다
+        return state if mine and age <= RESULT_SHOW_SECONDS else "idle"
     if state == "requested":  # 버튼은 눌렀는데 파이가 아직 가져가지 않음
         if age <= START_WAIT_SECONDS:
             return "waking" if mine else "busy"
@@ -375,4 +380,23 @@ def mark_ready():
 
 def finish_run():
     """(파이) 1회 분류가 끝났음을 알린다. 대기 프로그램을 켤 때 남은 요청을 지우는 데도 쓴다."""
-    _write_session({"state": "done"})
+    if _read_session().get("state") not in RESULT_STATES:  # 웹에 보여 줄 분류 결과는 지우지 않는다
+        _write_session({"state": "done"})
+
+
+_save_record = save_record
+
+
+def _save_record_and_report(student_id, material, quantity=1):
+    """(파이) 배출을 기록하고, 웹의 '수거 시작'으로 실행된 분류면 결과를 웹에 알린다."""
+    points = _save_record(student_id, material, quantity)
+    try:
+        session = _read_session()
+        if session.get("state") in RUN_STATES and session.get("student_id") == student_id:
+            _write_session({"state": "sorted" if points else "over_limit"})
+    except Exception:
+        pass  # 결과 알림이 실패해도 적립 결과는 그대로 돌려준다
+    return points
+
+
+save_record = _save_record_and_report
