@@ -62,12 +62,12 @@ def init_data():
 
 
 def register_user(student_id, department):
+    # 학과는 로그인할 때 고른 것으로 맞춘다. 전에 다른 학과로 등록한 학번도 그대로 로그인된다.
     with write_lock():
         store = read_store()
-        if student_id in store["users"]:
-            return store["users"][student_id] == department
-        store["users"][student_id] = department
-        write_store(store)
+        if store["users"].get(student_id) != department:
+            store["users"][student_id] = department
+            write_store(store)
         return True
 
 # ── 수거함 연결 (QR) ──────────────────────────────────────────────────────
@@ -218,17 +218,11 @@ def _db_init_data():
 
 
 def _db_register_user(student_id, department):
-    saved = _db_department(student_id)
-    if saved is None:
-        import requests
-        try:
-            _db("POST", "users", body={"student_id": student_id, "department": department})
-            return True
-        except requests.HTTPError as error:
-            if error.response is None or error.response.status_code != 409:
-                raise
-            saved = _db_department(student_id)  # 같은 학번이 방금 다른 곳에서 등록된 경우
-    return saved == department
+    # 학과는 로그인할 때 고른 것으로 맞춘다 (없으면 등록, 있으면 학과만 바꿈).
+    _db("POST", "users", {"on_conflict": "student_id"},
+        {"student_id": student_id, "department": department},
+        prefer="resolution=merge-duplicates")
+    return True
 
 
 def _db_start_session(student_id):
